@@ -317,45 +317,96 @@ def BatchPoolAnimConditioning(cur_prompt_series, nxt_prompt_series, weight_serie
     pooled_out = []
     cond_out = []
     max_size = 0
-
-    if settings.end_frame == 0:
-        settings.end_frame = settings.max_frames
-        print("end_frame at 0, using max_frames instead!")
-
-    if settings.start_frame >= settings.end_frame:
-        settings.start_frame = 0
-        print("start_frame larger than or equal to end_frame, using max_frames instead!")
-
+    cond_dim = None  # Track the conditioning dimension
+    print(f"[BatchPoolAnimConditioning] Starting with {len(cur_prompt_series)} prompts")
+    
+    # Calculate max size and dimension first
+    # Use actual end_frame or max_frames, whichever is valid
+    actual_end_frame = settings.end_frame if settings.end_frame > 0 else settings.max_frames
+    actual_start_frame = settings.start_frame
+    
     if max_size == 0:
-        for i in range(0, settings.end_frame):
+        for i in range(actual_start_frame, min(actual_end_frame, len(cur_prompt_series))):
+            if i < len(cur_prompt_series) and cur_prompt_series[i] is not None:
+                tokens = clip.tokenize(str(cur_prompt_series[i]))
+                result = clip.encode_from_tokens(tokens, return_pooled=True)
+                # Handle both tuple return and single tensor return
+                if isinstance(result, tuple):
+                    cond_to, pooled_to = result
+                else:
+                    cond_to = result
+                    pooled_to = None
+                max_size = max(max_size, cond_to.shape[1])
+                if cond_dim is None:
+                    cond_dim = cond_to.shape[-1]  # Get the last dimension (768 for SD, 3584 for Qwen, etc)
+    
+    for i in range(actual_start_frame, min(actual_end_frame, len(cur_prompt_series))):
+        # Ensure we have valid prompts at this index
+        if i < len(cur_prompt_series) and cur_prompt_series[i] is not None:
             tokens = clip.tokenize(str(cur_prompt_series[i]))
-            cond_to, pooled_to = clip.encode_from_tokens(tokens, return_pooled=True)
-            max_size = max(max_size, cond_to.shape[1])
-    for i in range(settings.start_frame, settings.end_frame):
-        tokens = clip.tokenize(str(cur_prompt_series[i]))
-        cond_to, pooled_to = clip.encode_from_tokens(tokens, return_pooled=True)
-
-        if i < len(nxt_prompt_series):
-            tokens = clip.tokenize(str(nxt_prompt_series[i]))
-            cond_from, pooled_from = clip.encode_from_tokens(tokens, return_pooled=True)
+            result = clip.encode_from_tokens(tokens, return_pooled=True)
+            # Handle both tuple return and single tensor return
+            if isinstance(result, tuple):
+                cond_to, pooled_to = result
+            else:
+                cond_to = result
+                pooled_to = None
         else:
-            cond_from, pooled_from = torch.zeros_like(cond_to), torch.zeros_like(pooled_to)
+            # If no current prompt, skip this frame
+            continue
 
-        interpolated_conditioning = addWeighted([[cond_to, {"pooled_output": pooled_to}]],
-                                                [[cond_from, {"pooled_output": pooled_from}]],
-                                                weight_series[i],max_size)
+        if i < len(nxt_prompt_series) and nxt_prompt_series[i] is not None:
+            tokens = clip.tokenize(str(nxt_prompt_series[i]))
+            result = clip.encode_from_tokens(tokens, return_pooled=True)
+            # Handle both tuple return and single tensor return
+            if isinstance(result, tuple):
+                cond_from, pooled_from = result
+            else:
+                cond_from = result
+                pooled_from = None
+        else:
+            # Create zero tensors with same shape as cond_to and pooled_to if available
+            cond_from = torch.zeros_like(cond_to)
+            pooled_from = torch.zeros_like(pooled_to) if pooled_to is not None else None
+
+        # Get the weight for this frame
+        current_weight = weight_series[i] if i < len(weight_series) else 1.0
+
+        # Build conditioning dicts with pooled_output only if available
+        cond_to_dict = {"pooled_output": pooled_to} if pooled_to is not None else {}
+        cond_from_dict = {"pooled_output": pooled_from} if pooled_from is not None else {}
+
+        interpolated_conditioning = addWeighted([[cond_to, cond_to_dict]],
+                                                [[cond_from, cond_from_dict]],
+                                                current_weight, max_size)
 
         interpolated_cond = interpolated_conditioning[0][0]
-        interpolated_pooled = interpolated_conditioning[0][1].get("pooled_output", pooled_from)
+        if pooled_to is not None:
+            interpolated_pooled = interpolated_conditioning[0][1].get("pooled_output", pooled_to)
+            pooled_out.append(interpolated_pooled)
 
         cond_out.append(interpolated_cond)
-        pooled_out.append(interpolated_pooled)
 
-    final_pooled_output = torch.cat(pooled_out, dim=0)
-    final_conditioning = torch.cat(cond_out, dim=0)
-
-    return [[final_conditioning, {"pooled_output": final_pooled_output}]]
-
+    # Only concatenate if we have valid outputs
+    if cond_out:
+        print(f"[BatchPoolAnimConditioning] About to concatenate {len(cond_out)} conditioning tensors")
+        for idx, c in enumerate(cond_out):
+            print(f"  Cond {idx} shape: {c.shape}")
+        final_conditioning = torch.cat(cond_out, dim=0)
+        print(f"[BatchPoolAnimConditioning] Final conditioning shape: {final_conditioning.shape}")
+        # Only include pooled_output if we have any
+        if pooled_out:
+            final_pooled_output = torch.cat(pooled_out, dim=0)
+            print(f"[BatchPoolAnimConditioning] Final pooled output shape: {final_pooled_output.shape}")
+            return [[final_conditioning, {"pooled_output": final_pooled_output}]]
+        else:
+            print(f"[BatchPoolAnimConditioning] No pooled output")
+            return [[final_conditioning, {}]]
+    else:
+        # Return empty conditioning if no valid frames - use detected dimension or default
+        if cond_dim is None:
+            cond_dim = 3584  # Default to Qwen dimension if we couldn't detect
+        return [[torch.zeros((1, 1, cond_dim)), {}]]
 def BatchGLIGENConditioning(cur_prompt_series, nxt_prompt_series, weight_series, clip):
     pooled_out = []
     cond_out = []
@@ -363,29 +414,57 @@ def BatchGLIGENConditioning(cur_prompt_series, nxt_prompt_series, weight_series,
     if max_size == 0:
         for i in range(len(cur_prompt_series)):
             tokens = clip.tokenize(str(cur_prompt_series[i]))
-            cond_to, pooled_to = clip.encode_from_tokens(tokens, return_pooled=True)
+            result = clip.encode_from_tokens(tokens, return_pooled=True)
+            # Handle both tuple return and single tensor return
+            if isinstance(result, tuple):
+                cond_to, pooled_to = result
+            else:
+                cond_to = result
+                pooled_to = None
             tensor_size = cond_to.shape[1]
             max_size = max(max_size, tensor_size)
 
     for i in range(len(cur_prompt_series)):
         tokens = clip.tokenize(str(cur_prompt_series[i]))
-        cond_to, pooled_to = clip.encode_from_tokens(tokens, return_pooled=True)
+        result = clip.encode_from_tokens(tokens, return_pooled=True)
+        # Handle both tuple return and single tensor return
+        if isinstance(result, tuple):
+            cond_to, pooled_to = result
+        else:
+            cond_to = result
+            pooled_to = None
 
         tokens = clip.tokenize(str(nxt_prompt_series[i]))
-        cond_from, pooled_from = clip.encode_from_tokens(tokens, return_pooled=True)
+        result = clip.encode_from_tokens(tokens, return_pooled=True)
+        # Handle both tuple return and single tensor return
+        if isinstance(result, tuple):
+            cond_from, pooled_from = result
+        else:
+            cond_from = result
+            pooled_from = None
 
-        interpolated_conditioning = addWeighted([[cond_to, {"pooled_output": pooled_to}]],
-                                                [[cond_from, {"pooled_output": pooled_from}]],
+        # Build conditioning dicts with pooled_output only if available
+        cond_to_dict = {"pooled_output": pooled_to} if pooled_to is not None else {}
+        cond_from_dict = {"pooled_output": pooled_from} if pooled_from is not None else {}
+
+        interpolated_conditioning = addWeighted([[cond_to, cond_to_dict]],
+                                                [[cond_from, cond_from_dict]],
                                                 weight_series[i], max_size)
 
         interpolated_cond = interpolated_conditioning[0][0]
-        interpolated_pooled = interpolated_conditioning[0][1].get("pooled_output", pooled_from)
+        if pooled_to is not None or pooled_from is not None:
+            interpolated_pooled = interpolated_conditioning[0][1].get("pooled_output", pooled_from if pooled_from is not None else pooled_to)
+            pooled_out.append(interpolated_pooled)
 
-        pooled_out.append(interpolated_pooled)
         cond_out.append(interpolated_cond)
 
-    final_pooled_output = torch.cat(pooled_out, dim=0)
-    final_conditioning = torch.cat(cond_out, dim=0)
+    # Only concatenate pooled outputs if we have any
+    if pooled_out:
+        final_pooled_output = torch.cat(pooled_out, dim=0)
+    else:
+        final_pooled_output = None
+        
+    final_conditioning = torch.cat(cond_out, dim=0) if cond_out else None
 
     return cond_out, pooled_out
 
@@ -393,36 +472,58 @@ def BatchPoolAnimConditioningSDXL(cur_prompt_series, nxt_prompt_series, weight_s
     pooled_out = []
     cond_out = []
     max_size = 0
-
-    if settings.end_frame == 0:
-        settings.end_frame = settings.max_frames
-        print("end_frame at 0, using max_frames instead!")
-
-    if settings.start_frame >= settings.end_frame:
-        settings.start_frame = 0
-        print("start_frame larger than or equal to end_frame, using max_frames instead!")
-
-
+    cond_dim = None  # Track the conditioning dimension
+    
+    # Use actual end_frame or max_frames, whichever is valid
+    actual_end_frame = settings.end_frame if settings.end_frame > 0 else settings.max_frames
+    actual_start_frame = settings.start_frame
+    
     if max_size == 0:
-        for i in range(0, settings.end_frame):
-            tokens = clip.tokenize(str(cur_prompt_series[i]))
-            cond_to, pooled_to = clip.encode_from_tokens(tokens, return_pooled=True)
-            max_size = max(max_size, cond_to.shape[1])
-    for i in range(settings.start_frame,settings.end_frame):
+        for i in range(actual_start_frame, min(actual_end_frame, len(cur_prompt_series))):
+            if i < len(cur_prompt_series) and cur_prompt_series[i] is not None:
+                tokens = clip.tokenize(str(cur_prompt_series[i]))
+                result = clip.encode_from_tokens(tokens, return_pooled=True)
+                # Handle both tuple return and single tensor return
+                if isinstance(result, tuple):
+                    cond_to, pooled_to = result
+                else:
+                    cond_to = result
+                max_size = max(max_size, cond_to.shape[1])
+                if cond_dim is None:
+                    cond_dim = cond_to.shape[-1]  # Get the last dimension
+                
+    for i in range(actual_start_frame, min(actual_end_frame, len(cur_prompt_series))):
         interpolated_conditioning = addWeighted(cur_prompt_series[i],
                                                 nxt_prompt_series[i],
-                                                weight_series[i], max_size)
+                                                weight_series[i])
 
         interpolated_cond = interpolated_conditioning[0][0]
-        interpolated_pooled = interpolated_conditioning[0][1].get("pooled_output")
+        interpolated_pooled = interpolated_conditioning[0][1].get("pooled_output") if len(interpolated_conditioning[0]) > 1 else None
 
-        pooled_out.append(interpolated_pooled)
+        if interpolated_pooled is not None:
+            pooled_out.append(interpolated_pooled)
         cond_out.append(interpolated_cond)
 
-    final_pooled_output = torch.cat(pooled_out, dim=0)
-    final_conditioning = torch.cat(cond_out, dim=0)
-
-    return [[final_conditioning, {"pooled_output": final_pooled_output}]]
+    # Only concatenate if we have valid outputs
+    if cond_out:
+        print(f"[BatchPoolAnimConditioning] About to concatenate {len(cond_out)} conditioning tensors")
+        for idx, c in enumerate(cond_out):
+            print(f"  Cond {idx} shape: {c.shape}")
+        final_conditioning = torch.cat(cond_out, dim=0)
+        print(f"[BatchPoolAnimConditioning] Final conditioning shape: {final_conditioning.shape}")
+        # Only include pooled_output if we have any
+        if pooled_out:
+            final_pooled_output = torch.cat(pooled_out, dim=0)
+            print(f"[BatchPoolAnimConditioning] Final pooled output shape: {final_pooled_output.shape}")
+            return [[final_conditioning, {"pooled_output": final_pooled_output}]]
+        else:
+            print(f"[BatchPoolAnimConditioning] No pooled output")
+            return [[final_conditioning, {}]]
+    else:
+        # Return empty conditioning if no valid frames - use detected dimension or default
+        if cond_dim is None:
+            cond_dim = 3584  # Default to Qwen dimension if we couldn't detect
+        return [[torch.zeros((1, 1, cond_dim)), {}]]
 
 
 def BatchInterpolatePromptsSDXL(animation_promptsG, animation_promptsL, clip, settings: ScheduleSettings):

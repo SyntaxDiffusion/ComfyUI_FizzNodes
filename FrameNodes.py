@@ -95,7 +95,6 @@ class InitNodeFrame:
             }
         }
     RETURN_TYPES = ("FIZZFRAME","CONDITIONING","CONDITIONING",)
-    RETURN_NAMES = ("FIZZFRAME","POS_COND","NEG_COND",)
     FUNCTION = "create_frame"
 
     CATEGORY = "FizzNodes 📅🅕🅝/FrameNodes"
@@ -126,17 +125,32 @@ class InitNodeFrame:
             new_frame["clip"] = clip 
 
         pos_tokens = new_frame["clip"].tokenize(new_positive_text)        
-        pos_cond, pos_pooled = new_frame["clip"].encode_from_tokens(pos_tokens, return_pooled=True)
+        result = new_frame["clip"].encode_from_tokens(pos_tokens, return_pooled=True)
+        # Handle both tuple return and single tensor return
+        if isinstance(result, tuple):
+            pos_cond, pos_pooled = result
+        else:
+            pos_cond = result
+            pos_pooled = None
         new_frame["pos_conditioning"] = {"cond": pos_cond, "pooled": pos_pooled}
 
         neg_tokens = new_frame["clip"].tokenize(new_negative_text)
-        neg_cond, neg_pooled = new_frame["clip"].encode_from_tokens(neg_tokens, return_pooled=True)
+        result = new_frame["clip"].encode_from_tokens(neg_tokens, return_pooled=True)
+        # Handle both tuple return and single tensor return
+        if isinstance(result, tuple):
+            neg_cond, neg_pooled = result
+        else:
+            neg_cond = result
+            neg_pooled = None
         new_frame["neg_conditioning"] = {"cond": neg_cond, "pooled": neg_pooled}
 
         self.frames[frame] = new_frame
         self.thisFrame = new_frame
 
-        return (self, [[pos_cond, {"pooled_output": pos_pooled}]], [[neg_cond, {"pooled_output": neg_pooled}]])
+        # Return with pooled_output only if available
+        pos_dict = {"pooled_output": pos_pooled} if pos_pooled is not None else {}
+        neg_dict = {"pooled_output": neg_pooled} if neg_pooled is not None else {}
+        return (self, [[pos_cond, pos_dict]], [[neg_cond, neg_dict]])
 
 class NodeFrame:
 
@@ -157,7 +171,6 @@ class NodeFrame:
             }
         }
     RETURN_TYPES = ("FIZZFRAME","CONDITIONING","CONDITIONING",)
-    RETURN_NAMES = ("FIZZFRAME","POS_COND","NEG_COND",)
     FUNCTION = "create_frame"
 
     CATEGORY = "FizzNodes 📅🅕🅝/FrameNodes"
@@ -170,10 +183,22 @@ class NodeFrame:
         new_negative_text = f"{negative_text}, {prev_frame['general_negative']}"
 
         pos_tokens = prev_frame["clip"].tokenize(new_positive_text)        
-        pos_cond, pos_pooled = prev_frame["clip"].encode_from_tokens(pos_tokens, return_pooled=True)
+        result = prev_frame["clip"].encode_from_tokens(pos_tokens, return_pooled=True)
+        # Handle both tuple return and single tensor return
+        if isinstance(result, tuple):
+            pos_cond, pos_pooled = result
+        else:
+            pos_cond = result
+            pos_pooled = None
 
         neg_tokens = prev_frame["clip"].tokenize(new_negative_text)
-        neg_cond, neg_pooled = prev_frame["clip"].encode_from_tokens(neg_tokens, return_pooled=True)
+        result = prev_frame["clip"].encode_from_tokens(neg_tokens, return_pooled=True)
+        # Handle both tuple return and single tensor return
+        if isinstance(result, tuple):
+            neg_cond, neg_pooled = result
+        else:
+            neg_cond = result
+            neg_pooled = None
 
         new_frame = {
             "positive_text": positive_text,
@@ -187,7 +212,10 @@ class NodeFrame:
         self.thisFrame = new_frame
         self.frames[frame] = new_frame
 
-        return (self, [[pos_cond, {"pooled_output": pos_pooled}]], [[neg_cond, {"pooled_output": neg_pooled}]])
+        # Return with pooled_output only if available
+        pos_dict = {"pooled_output": pos_pooled} if pos_pooled is not None else {}
+        neg_dict = {"pooled_output": neg_pooled} if neg_pooled is not None else {}
+        return (self, [[pos_cond, pos_dict]], [[neg_cond, neg_dict]])
 
 class FrameConcatenate:
     def __init__(self):

@@ -73,11 +73,18 @@ def addWeighted(conditioning_to, conditioning_from, conditioning_to_strength, ma
         print("Warning: ConditioningAverage conditioning_from contains more than 1 cond, only the first one will actually be applied to conditioning_to.")
 
     cond_from = conditioning_from[0][0]
-    pooled_output_from = conditioning_from[0][1].get("pooled_output", None)
+    pooled_output_from = conditioning_from[0][1].get("pooled_output", None) if len(conditioning_from[0]) > 1 else None
 
     for i in range(len(conditioning_to)):
         t1 = conditioning_to[i][0]
-        pooled_output_to = conditioning_to[i][1].get("pooled_output", pooled_output_from)
+        # Handle cases where conditioning_to might not have metadata dict
+        if len(conditioning_to[i]) > 1:
+            pooled_output_to = conditioning_to[i][1].get("pooled_output", pooled_output_from)
+            t_to = conditioning_to[i][1].copy()
+        else:
+            pooled_output_to = pooled_output_from
+            t_to = {}
+            
         if max_size == 0:
             max_size = max(t1.shape[1], cond_from.shape[1])
         t0, max_size = pad_with_zeros(cond_from, max_size)
@@ -85,9 +92,13 @@ def addWeighted(conditioning_to, conditioning_from, conditioning_to_strength, ma
         t0, max_size = pad_with_zeros(t0, t1.shape[1])
 
         tw = torch.mul(t1, conditioning_to_strength) + torch.mul(t0, (1.0 - conditioning_to_strength))
-        t_to = conditioning_to[i][1].copy()
 
-        t_to["pooled_output"] = pooled_output_from
+        # Only add pooled_output if we have one
+        if pooled_output_from is not None:
+            t_to["pooled_output"] = pooled_output_from
+        elif pooled_output_to is not None:
+            t_to["pooled_output"] = pooled_output_to
+            
         n = [tw, t_to]
         out.append(n)
 
@@ -138,24 +149,55 @@ def parse_weight(match, frame=0, max_frames=0) -> float: #calculate weight steps
 def PoolAnimConditioning(cur_prompt, nxt_prompt, weight, clip):  
     if str(cur_prompt) == str(nxt_prompt):
         tokens = clip.tokenize(str(cur_prompt))
-        cond, pooled = clip.encode_from_tokens(tokens, return_pooled=True)
-        return [[cond, {"pooled_output": pooled}]]
+        result = clip.encode_from_tokens(tokens, return_pooled=True)
+        # Handle both tuple return and single tensor return
+        if isinstance(result, tuple):
+            cond, pooled = result
+            return [[cond, {"pooled_output": pooled}]]
+        else:
+            return [[result, {}]]
 
     if weight == 1:
         tokens = clip.tokenize(str(cur_prompt))
-        cond, pooled = clip.encode_from_tokens(tokens, return_pooled=True)
-        return [[cond, {"pooled_output": pooled}]]
+        result = clip.encode_from_tokens(tokens, return_pooled=True)
+        # Handle both tuple return and single tensor return
+        if isinstance(result, tuple):
+            cond, pooled = result
+            return [[cond, {"pooled_output": pooled}]]
+        else:
+            return [[result, {}]]
 
     if weight == 0:
         tokens = clip.tokenize(str(nxt_prompt))
-        cond, pooled = clip.encode_from_tokens(tokens, return_pooled=True)
-        return [[cond, {"pooled_output": pooled}]]
+        result = clip.encode_from_tokens(tokens, return_pooled=True)
+        # Handle both tuple return and single tensor return
+        if isinstance(result, tuple):
+            cond, pooled = result
+            return [[cond, {"pooled_output": pooled}]]
+        else:
+            return [[result, {}]]
     else:
         tokens = clip.tokenize(str(nxt_prompt))
-        cond_from, pooled_from = clip.encode_from_tokens(tokens, return_pooled=True)
+        result_from = clip.encode_from_tokens(tokens, return_pooled=True)
+        # Handle both tuple return and single tensor return
+        if isinstance(result_from, tuple):
+            cond_from, pooled_from = result_from
+            cond_from_dict = {"pooled_output": pooled_from}
+        else:
+            cond_from = result_from
+            cond_from_dict = {}
+            
         tokens = clip.tokenize(str(cur_prompt))
-        cond_to, pooled_to = clip.encode_from_tokens(tokens, return_pooled=True)
-        return addWeighted([[cond_to, {"pooled_output": pooled_to}]], [[cond_from, {"pooled_output": pooled_from}]], weight)
+        result_to = clip.encode_from_tokens(tokens, return_pooled=True)
+        # Handle both tuple return and single tensor return
+        if isinstance(result_to, tuple):
+            cond_to, pooled_to = result_to
+            cond_to_dict = {"pooled_output": pooled_to}
+        else:
+            cond_to = result_to
+            cond_to_dict = {}
+            
+        return addWeighted([[cond_to, cond_to_dict]], [[cond_from, cond_from_dict]], weight)
 
 def SDXLencode(g, l, settings:ScheduleSettings, clip):
     tokens = clip.tokenize(g)
@@ -166,13 +208,26 @@ def SDXLencode(g, l, settings:ScheduleSettings, clip):
             tokens["l"] += empty["l"]
         while len(tokens["l"]) > len(tokens["g"]):
             tokens["g"] += empty["g"]
-    cond, pooled = clip.encode_from_tokens(tokens, return_pooled=True)
-    return [[cond, {
-        "pooled_output": pooled,
-        "width": settings.width,
-        "height": settings.height,
-        "crop_w": settings.crop_w,
-        "crop_h": settings.crop_h,
-        "target_width": settings.target_width,
-        "target_height": settings.target_height
-    }]]
+    result = clip.encode_from_tokens(tokens, return_pooled=True)
+    # Handle both tuple return and single tensor return
+    if isinstance(result, tuple):
+        cond, pooled = result
+        return [[cond, {
+            "pooled_output": pooled,
+            "width": settings.width,
+            "height": settings.height,
+            "crop_w": settings.crop_w,
+            "crop_h": settings.crop_h,
+            "target_width": settings.target_width,
+            "target_height": settings.target_height
+        }]]
+    else:
+        # No pooled output, just return conditioning with metadata
+        return [[result, {
+            "width": settings.width,
+            "height": settings.height,
+            "crop_w": settings.crop_w,
+            "crop_h": settings.crop_h,
+            "target_width": settings.target_width,
+            "target_height": settings.target_height
+        }]]

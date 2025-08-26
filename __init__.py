@@ -58,7 +58,7 @@ from .ScheduledNodes import (
     ValueSchedule, PromptSchedule, PromptScheduleNodeFlow, PromptScheduleNodeFlowEnd, PromptScheduleEncodeSDXL,
     StringSchedule, BatchPromptSchedule, BatchValueSchedule, BatchPromptScheduleEncodeSDXL, BatchStringSchedule,
     BatchValueScheduleLatentInput, BatchPromptScheduleEncodeSDXLLatentInput, BatchPromptScheduleLatentInput,
-    ImagesFromBatchSchedule,
+    ImagesFromBatchSchedule, BatchPromptScheduleImageInput,
     #, BatchPromptScheduleNodeFlowEnd #, BatchGLIGENSchedule
 )
 from .FrameNodes import FrameConcatenate, InitNodeFrame, NodeFrame, StringConcatenate
@@ -89,6 +89,7 @@ NODE_CLASS_MAPPINGS = {
     "BatchPromptScheduleSDXLLatentInput":BatchPromptScheduleEncodeSDXLLatentInput,
     "BatchPromptScheduleLatentInput":BatchPromptScheduleLatentInput,
     "ImagesFromBatchSchedule":ImagesFromBatchSchedule,
+    "BatchPromptScheduleImageInput":BatchPromptScheduleImageInput,
     #"BatchPromptScheduleNodeFlowEnd":BatchPromptScheduleNodeFlowEnd,
     #"BatchGLIGENSchedule": BatchGLIGENSchedule,
 
@@ -136,5 +137,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "SelectFrameNumber":"Select Frame Number 📅🅕🅝",
     "CalculateFrameOffset":"Calculate Frame Offset 📅🅕🅝",
     "ImagesFromBatchSchedule":"Image Select Schedule 📅🅕🅝",
+    "BatchPromptScheduleImageInput":"Batch Prompt Schedule (Image Input) 📅🅕🅝",
 }
 print('\033[34mFizzleDorf Custom Nodes: \033[92mLoaded\033[0m')

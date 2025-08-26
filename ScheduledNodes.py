@@ -133,6 +133,9 @@ class BatchPromptSchedule:
 
     def animate(self, text, max_frames, print_output, clip, start_frame, end_frame, pw_a=0, pw_b=0, pw_c=0, pw_d=0, pre_text='', app_text=''
     ):
+        # If end_frame is specified and valid, use it as max_frames for proper batch size
+        actual_max_frames = end_frame if (end_frame > 0 and end_frame <= max_frames) else max_frames
+        
         settings = ScheduleSettings(
             text_g=text,
             pre_text_G=pre_text,
@@ -140,7 +143,7 @@ class BatchPromptSchedule:
             text_L=None,
             pre_text_L=None,
             app_text_L=None,
-            max_frames=max_frames,
+            max_frames=actual_max_frames,
             current_frame=None,
             print_output=print_output,
             pw_a=pw_a,
@@ -194,6 +197,14 @@ class BatchPromptScheduleLatentInput:
 
     def animate(self, text, num_latents, print_output, clip, start_frame, end_frame, pw_a=0, pw_b=0, pw_c=0, pw_d=0, pre_text='', app_text=''
     ):
+        # Calculate the actual number of frames from the latent
+        print(f"[BatchPromptScheduleLatentInput] Input latents keys: {num_latents.keys()}")
+        for key, tensor in num_latents.items():
+            print(f"[BatchPromptScheduleLatentInput] Latent '{key}' shape: {tensor.shape}")
+        latent_frames = sum(tensor.size(0) for tensor in num_latents.values())
+        print(f"[BatchPromptScheduleLatentInput] Detected {latent_frames} total latent frames")
+        
+        # Use latent_frames as both max_frames and end_frame to ensure consistency
         settings = ScheduleSettings(
             text_g=text,
             pre_text_G=pre_text,
@@ -201,7 +212,7 @@ class BatchPromptScheduleLatentInput:
             text_L=None,
             pre_text_L=None,
             app_text_L=None,
-            max_frames=sum(tensor.size(0) for tensor in num_latents.values()),
+            max_frames=latent_frames,
             current_frame=None,
             print_output=print_output,
             pw_a=pw_a,
@@ -209,7 +220,7 @@ class BatchPromptScheduleLatentInput:
             pw_c=pw_c,
             pw_d=pw_d,
             start_frame=start_frame,
-            end_frame=end_frame,
+            end_frame=latent_frames,  # Force end_frame to match latent_frames
             width=None,
             height=None,
             crop_w=None,
@@ -429,7 +440,7 @@ class BatchPromptScheduleEncodeSDXL:
         }
 
     RETURN_TYPES = ("CONDITIONING", "CONDITIONING",)# "CONDITIONING", "CONDITIONING", "CONDITIONING", "CONDITIONING",)
-    RETURN_NAMES = ("POS", "NEG")#, "POS_CUR", "NEG_CUR", "POS_NXT", "NEG_NXT",)
+    RETURN_NAMES = ("POS", "NEG", "POS_CUR", "NEG_CUR", "POS_NXT", "NEG_NXT",)
     FUNCTION = "animate"
 
     CATEGORY = "FizzNodes 📅🅕🅝/BatchScheduleNodes"
@@ -498,7 +509,7 @@ class BatchPromptScheduleEncodeSDXLLatentInput:
              }
         }
     RETURN_TYPES = ("CONDITIONING", "CONDITIONING", "LATENT",)# "CONDITIONING", "CONDITIONING", "CONDITIONING", "CONDITIONING",)
-    RETURN_NAMES = ("POS", "NEG", "INPUT_LATENTS")#, "NEG_CUR", "POS_NXT", "NEG_NXT",)
+    RETURN_NAMES = ("POS", "NEG", "POS_CUR", "NEG_CUR", "POS_NXT", "NEG_NXT",)
     FUNCTION = "animate"
 
     CATEGORY = "FizzNodes 📅🅕🅝/BatchScheduleNodes"
@@ -722,7 +733,15 @@ class BatchGLIGENSchedule:
 
     def append(self, conditioning_to, clip, gligen_textbox_model, text, width, height, x, y):
         c = []
-        cond, cond_pooled = clip.encode_from_tokens(clip.tokenize(text), return_pooled=True)
+        result = clip.encode_from_tokens(clip.tokenize(text), return_pooled=True)
+        # Handle both tuple return and single tensor return
+        if isinstance(result, tuple):
+            cond, cond_pooled = result
+        else:
+            cond = result
+            # For GLIGEN, we need a pooled output, so use the cond tensor if no pooled is available
+            cond_pooled = cond
+            
         for t in range(0, len(conditioning_to)):
             n = [conditioning_to[t][0], conditioning_to[t][1].copy()]
             position_params = [(cond_pooled, height // 8, width // 8, y // 8, x // 8)]
@@ -801,6 +820,92 @@ class BatchValueScheduleLatentInput:
 # ComfyUI-Image-Selector by SLAPaper
 # https://github.com/SLAPaper/ComfyUI-Image-Selector
 # licensed under Apache-2.0
+class BatchPromptScheduleImageInput:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": {
+                    "text": ("STRING", {"multiline": True, "default": defaultPrompt}),
+                    "clip": ("CLIP",),
+                    "max_frames": ("INT", {"default": 120.0, "min": 1.0, "max": 999999.0, "step": 1.0}),
+                    "print_output":("BOOLEAN", {"default": False}),
+                },
+                "optional": {
+                    "vae": ("VAE", ),
+                    "image": ("IMAGE", ),
+                    "pre_text": ("STRING", {"multiline": True, "forceInput": True}),
+                    "app_text": ("STRING", {"multiline": True, "forceInput": True}),
+                    "start_frame": ("INT", {"default": 0, "min": 0, "max": 9999, "step": 1, "display": "start_frame(print_only)", }),
+                    "end_frame": ("INT", {"default": 0, "min": 0, "max": 9999, "step": 1, "display": "end_frame(print_only)",}),
+                    "pw_a": ("FLOAT", {"default": 0.0, "min": -9999.0, "max": 9999.0, "step": 0.1, "forceInput": True}),
+                    "pw_b": ("FLOAT", {"default": 0.0, "min": -9999.0, "max": 9999.0, "step": 0.1, "forceInput": True}),
+                    "pw_c": ("FLOAT", {"default": 0.0, "min": -9999.0, "max": 9999.0, "step": 0.1, "forceInput": True}),
+                    "pw_d": ("FLOAT", {"default": 0.0, "min": -9999.0, "max": 9999.0, "step": 0.1, "forceInput": True}),
+                }
+        }
+
+    RETURN_TYPES = ("CONDITIONING", "CONDITIONING",)
+    RETURN_NAMES = ("POS", "NEG",)
+    FUNCTION = "animate"
+
+    CATEGORY = "FizzNodes 📅🅕🅝/BatchScheduleNodes"
+
+    def animate(self, text, max_frames, print_output, clip, start_frame, end_frame, vae=None, image=None, pw_a=0, pw_b=0, pw_c=0, pw_d=0, pre_text='', app_text=''):
+        import math
+        import comfy.utils
+        import node_helpers
+        
+        # Process image input similar to TextEncodeQwenImageEdit
+        ref_latent = None
+        if image is not None:
+            samples = image.movedim(-1, 1)
+            total = int(1024 * 1024)
+            
+            scale_by = math.sqrt(total / (samples.shape[3] * samples.shape[2]))
+            width = round(samples.shape[3] * scale_by)
+            height = round(samples.shape[2] * scale_by)
+            
+            s = comfy.utils.common_upscale(samples, width, height, "area", "disabled")
+            image_processed = s.movedim(1, -1)
+            
+            if vae is not None:
+                ref_latent = vae.encode(image_processed[:, :, :, :3])
+        
+        # Use existing batch prompt schedule logic
+        actual_max_frames = end_frame if (end_frame > 0 and end_frame <= max_frames) else max_frames
+        
+        settings = ScheduleSettings(
+            text_g=text,
+            pre_text_G=pre_text,
+            app_text_G=app_text,
+            text_L=None,
+            pre_text_L=None,
+            app_text_L=None,
+            max_frames=actual_max_frames,
+            current_frame=None,
+            print_output=print_output,
+            pw_a=pw_a,
+            pw_b=pw_b,
+            pw_c=pw_c,
+            pw_d=pw_d,
+            start_frame=start_frame,
+            end_frame=end_frame,
+            width=None,
+            height=None,
+            crop_w=None,
+            crop_h=None,
+            target_width=None,
+            target_height=None,
+        )
+        
+        pos_conditioning, neg_conditioning = batch_prompt_schedule(settings, clip)
+        
+        # Add reference latents to positive conditioning if available
+        if ref_latent is not None:
+            pos_conditioning = node_helpers.conditioning_set_values(pos_conditioning, {"reference_latents": [ref_latent]}, append=True)
+        
+        return (pos_conditioning, neg_conditioning)
+
+
 class ImagesFromBatchSchedule:
     @classmethod
     def INPUT_TYPES(s):
